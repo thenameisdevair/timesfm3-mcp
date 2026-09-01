@@ -38,3 +38,15 @@ A lightweight Model Context Protocol (MCP) server that exposes Google's **TimesF
 
     '''Bash
     python client.py
+
+
+
+## Cloud Deployment (V2)
+
+This repository includes a Dockerized HTTP/SSE setup designed specifically for hosting on Hugging Face Spaces. 
+
+To deploy this publicly:
+1. Create a new **Docker Space** on Hugging Face.
+2. Connect it to this GitHub repository.
+3. Add your Hugging Face Access Token as a Secret named `HF_TOKEN` in the Space settings (required to download the gated model weights).
+4. The space will automatically build using the provided `Dockerfile` and serve the MCP tool over HTTP/SSE via `app.py`.
