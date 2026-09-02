@@ -140,6 +140,10 @@ class UnivariatePathTests(unittest.TestCase):
         self.assertEqual(out["forecast"], forecast.astype(float).tolist())
         self.assertEqual(out["quantiles"]["q50"], quantiles[:, 4].astype(float).tolist())
         self.assertEqual(out["series"][0]["id"], "series_0")
+        self.assertNotIn("timestamps", out)
+        self.assertNotIn("timestamps", out["series"][0])
+        self.assertNotIn("freq", out)
+        self.assertNotIn("history_end", out)
 
         call = fake.calls[0]
         self.assertEqual(len(call["contexts"]), 1)
@@ -174,6 +178,8 @@ class MultivariatePathTests(unittest.TestCase):
         self.assertEqual(out["mode"], "multivariate")
         self.assertEqual(out["n_series"], 2)
         self.assertNotIn("forecast", out)
+        self.assertNotIn("timestamps", out)
+        self.assertNotIn("timestamps", out["series"][0])
         self.assertEqual(out["series"][0]["id"], "sku_a")
         self.assertEqual(out["series"][1]["id"], "sku_b")
         self.assertEqual(len(out["series"][0]["forecast"]), 4)
@@ -222,6 +228,169 @@ class MultivariatePathTests(unittest.TestCase):
         out = run_forecast(fake, series=[[1, 2], [3, 4]], horizon=2)
         self.assertEqual(out["status"], "error")
         self.assertIn("expected 2", out["error"])
+
+
+class CalendarTests(unittest.TestCase):
+    def test_daily_start_freq_labels_forecast(self):
+        forecast, quantiles = _univariate_out(horizon=3)
+        fake = FakeForecaster(forecast, quantiles)
+        history = [10, 11, 13, 12, 14, 16, 15, 17]  # T=8
+        out = run_forecast(
+            fake,
+            history=history,
+            horizon=3,
+            start="2026-08-25",
+            freq="D",
+        )
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["freq"], "D")
+        self.assertEqual(out["history_end"], "2026-09-01")
+        self.assertEqual(out["timestamps"], ["2026-09-02", "2026-09-03", "2026-09-04"])
+        self.assertEqual(out["series"][0]["timestamps"], out["timestamps"])
+        self.assertEqual(out["forecast"], forecast.astype(float).tolist())
+        self.assertEqual(len(fake.calls), 1)
+        self.assertNotIn("start", fake.calls[0])
+
+    def test_start_without_freq_errors_before_model(self):
+        fake = FakeForecaster(*_univariate_out())
+        out = run_forecast(fake, history=[1.0, 2.0, 3.0], horizon=2, start="2026-08-25")
+        self.assertEqual(out["status"], "error")
+        self.assertIn("together", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_freq_without_start_errors_before_model(self):
+        fake = FakeForecaster(*_univariate_out())
+        out = run_forecast(fake, history=[1.0, 2.0, 3.0], horizon=2, freq="D")
+        self.assertEqual(out["status"], "error")
+        self.assertEqual(fake.calls, [])
+
+    def test_unknown_freq(self):
+        fake = FakeForecaster(*_univariate_out())
+        out = run_forecast(
+            fake, history=[1.0, 2.0, 3.0], horizon=2, start="2026-08-25", freq="Q"
+        )
+        self.assertEqual(out["status"], "error")
+        self.assertIn("freq", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_hourly(self):
+        forecast, quantiles = _univariate_out(horizon=2)
+        fake = FakeForecaster(forecast, quantiles)
+        out = run_forecast(
+            fake,
+            history=[1.0, 2.0, 3.0],
+            horizon=2,
+            start="2026-09-01T10:00:00",
+            freq="H",
+        )
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["freq"], "H")
+        self.assertEqual(out["history_end"], "2026-09-01T12:00:00")
+        self.assertEqual(
+            out["timestamps"],
+            ["2026-09-01T13:00:00", "2026-09-01T14:00:00"],
+        )
+
+    def test_weekly(self):
+        forecast, quantiles = _univariate_out(horizon=2)
+        fake = FakeForecaster(forecast, quantiles)
+        out = run_forecast(
+            fake,
+            history=[1.0, 2.0, 3.0, 4.0],
+            horizon=2,
+            start="2026-08-24",
+            freq="W",
+        )
+        self.assertEqual(out["history_end"], "2026-09-14")
+        self.assertEqual(out["timestamps"], ["2026-09-21", "2026-09-28"])
+
+    def test_monthly_clamps_end_of_month(self):
+        forecast, quantiles = _univariate_out(horizon=2)
+        fake = FakeForecaster(forecast, quantiles)
+        out = run_forecast(
+            fake,
+            history=[1.0, 2.0],
+            horizon=2,
+            start="2026-01-31",
+            freq="M",
+        )
+        self.assertEqual(out["history_end"], "2026-02-28")
+        self.assertEqual(out["timestamps"], ["2026-03-31", "2026-04-30"])
+
+    def test_regular_timestamp_list(self):
+        forecast, quantiles = _univariate_out(horizon=2)
+        fake = FakeForecaster(forecast, quantiles)
+        out = run_forecast(
+            fake,
+            history=[1.0, 2.0, 3.0],
+            horizon=2,
+            timestamps=["2026-08-01", "2026-08-02", "2026-08-03"],
+        )
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["freq"], "D")
+        self.assertEqual(out["history_end"], "2026-08-03")
+        self.assertEqual(out["timestamps"], ["2026-08-04", "2026-08-05"])
+
+    def test_gapped_timestamps_rejected(self):
+        fake = FakeForecaster(*_univariate_out())
+        out = run_forecast(
+            fake,
+            history=[1.0, 2.0, 3.0],
+            horizon=2,
+            timestamps=["2026-08-01", "2026-08-02", "2026-08-04"],
+        )
+        self.assertEqual(out["status"], "error")
+        self.assertIn("not strictly regular", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_timestamps_wrong_length(self):
+        fake = FakeForecaster(*_univariate_out())
+        out = run_forecast(
+            fake,
+            history=[1.0, 2.0, 3.0],
+            horizon=2,
+            timestamps=["2026-08-01", "2026-08-02"],
+        )
+        self.assertEqual(out["status"], "error")
+        self.assertIn("expected 3", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_cannot_mix_timestamps_with_start(self):
+        fake = FakeForecaster(*_univariate_out())
+        out = run_forecast(
+            fake,
+            history=[1.0, 2.0, 3.0],
+            horizon=2,
+            start="2026-08-01",
+            freq="D",
+            timestamps=["2026-08-01", "2026-08-02", "2026-08-03"],
+        )
+        self.assertEqual(out["status"], "error")
+        self.assertIn("not both", out["error"])
+        self.assertEqual(fake.calls, [])
+
+    def test_multivariate_shares_one_calendar(self):
+        forecast, quantiles = _multivariate_out(n_series=2, horizon=3)
+        fake = FakeForecaster(forecast, quantiles)
+        out = run_forecast(
+            fake,
+            series=[[1, 2, 3, 4], [5, 6, 7, 8]],
+            series_ids=["sku_a", "sku_b"],
+            horizon=3,
+            start="2026-08-01",
+            freq="D",
+        )
+        self.assertEqual(out["status"], "success")
+        self.assertEqual(out["mode"], "multivariate")
+        self.assertNotIn("timestamps", out)
+        self.assertEqual(
+            out["series"][0]["timestamps"],
+            ["2026-08-05", "2026-08-06", "2026-08-07"],
+        )
+        self.assertEqual(
+            out["series"][1]["timestamps"],
+            out["series"][0]["timestamps"],
+        )
 
 
 if __name__ == "__main__":

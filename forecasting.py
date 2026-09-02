@@ -8,10 +8,15 @@ Shapes match Google's official TimesFM 3.0 API:
 - past_future_covariates: (C_future, T + H)
 - Univariate output: forecast (H,), quantiles (H, 9)
 - Multivariate output: forecast (V, H), quantiles (V, H, 9)
+
+Optional calendar labels (start + freq, or a history timestamp list) are
+applied after inference. They are never passed to TimesFM-3.
 """
 
 from __future__ import annotations
 
+from calendar import monthrange
+from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -24,6 +29,21 @@ LICENSE_NOTE = (
     "research, evaluation, and non-production experiments only — not for "
     "commercial or production systems. This MCP server's own code is Apache-2.0."
 )
+
+FREQ_ALIASES = {
+    "h": "H",
+    "hour": "H",
+    "hours": "H",
+    "d": "D",
+    "day": "D",
+    "days": "D",
+    "w": "W",
+    "week": "W",
+    "weeks": "W",
+    "m": "M",
+    "month": "M",
+    "months": "M",
+}
 
 
 def serialize_quantiles(quantiles: Any) -> dict[str, list[float]] | None:
@@ -86,6 +106,144 @@ def _as_2d_channels(name: str, rows: list[list[float]], expected_len: int) -> np
     return np.stack(arrays, axis=0)
 
 
+def _is_date_only(value: str) -> bool:
+    s = str(value).strip()
+    return len(s) == 10 and s[4] == "-" and s[7] == "-"
+
+
+def parse_timestamp(value: str) -> datetime:
+    s = str(value).strip()
+    if not s:
+        raise ValueError("timestamp is empty")
+    if _is_date_only(s):
+        return datetime.fromisoformat(s)
+    s = s.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+
+def _format_timestamp(dt: datetime, date_only: bool) -> str:
+    if date_only:
+        return dt.date().isoformat()
+    return dt.replace(microsecond=0).isoformat()
+
+
+def _add_months(dt: datetime, n: int) -> datetime:
+    month = dt.month - 1 + n
+    year = dt.year + month // 12
+    month = month % 12 + 1
+    day = min(dt.day, monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def add_steps(dt: datetime, freq: str, n: int) -> datetime:
+    if n == 0:
+        return dt
+    if freq == "H":
+        return dt + timedelta(hours=n)
+    if freq == "D":
+        return dt + timedelta(days=n)
+    if freq == "W":
+        return dt + timedelta(weeks=n)
+    if freq == "M":
+        return _add_months(dt, n)
+    raise ValueError(f"freq must be one of H, D, W, M (got {freq!r})")
+
+
+def _normalize_freq(freq: str) -> str:
+    key = FREQ_ALIASES.get(str(freq).strip().lower())
+    if key is None:
+        raise ValueError(f"freq must be one of H, D, W, M (got {freq!r})")
+    return key
+
+
+def _freq_from_delta(delta: timedelta) -> str | None:
+    seconds = int(delta.total_seconds())
+    if seconds == 3600:
+        return "H"
+    if seconds == 86400:
+        return "D"
+    if seconds == 86400 * 7:
+        return "W"
+    return None
+
+
+def resolve_calendar(
+    *,
+    context_length: int,
+    horizon: int,
+    start: str | None = None,
+    freq: str | None = None,
+    timestamps: list[str] | None = None,
+) -> dict[str, Any] | None:
+    has_start = start is not None and str(start).strip() != ""
+    has_freq = freq is not None and str(freq).strip() != ""
+    has_ts = timestamps is not None
+
+    if not has_start and not has_freq and not has_ts:
+        return None
+    if has_ts and (has_start or has_freq):
+        raise ValueError("pass timestamps or start+freq, not both")
+    if has_ts:
+        return _calendar_from_timestamps(timestamps, context_length, horizon)
+    if has_start ^ has_freq:
+        raise ValueError("start and freq must be provided together")
+    return _calendar_from_start_freq(str(start), str(freq), context_length, horizon)
+
+
+def _calendar_from_start_freq(
+    start: str, freq: str, context_length: int, horizon: int
+) -> dict[str, Any]:
+    freq_key = _normalize_freq(freq)
+    origin = parse_timestamp(start)
+    date_only = _is_date_only(start) and freq_key != "H"
+    history_end = add_steps(origin, freq_key, context_length - 1)
+    forecast_timestamps = [
+        _format_timestamp(add_steps(origin, freq_key, context_length + i), date_only)
+        for i in range(horizon)
+    ]
+    return {
+        "freq": freq_key,
+        "history_end": _format_timestamp(history_end, date_only),
+        "forecast_timestamps": forecast_timestamps,
+    }
+
+
+def _calendar_from_timestamps(
+    timestamps: list[str], context_length: int, horizon: int
+) -> dict[str, Any]:
+    if len(timestamps) != context_length:
+        raise ValueError(
+            f"timestamps length is {len(timestamps)}, expected {context_length}"
+        )
+    parsed = [parse_timestamp(value) for value in timestamps]
+    if any(later <= earlier for earlier, later in zip(parsed, parsed[1:])):
+        raise ValueError("timestamps must be strictly increasing")
+    if context_length < 2:
+        raise ValueError("need at least two timestamps to check spacing, or pass start and freq")
+    deltas = [later - earlier for earlier, later in zip(parsed, parsed[1:])]
+    if any(delta != deltas[0] for delta in deltas[1:]):
+        raise ValueError(
+            "timestamps are not strictly regular; missing observations are not filled"
+        )
+    step = deltas[0]
+    date_only = all(_is_date_only(value) for value in timestamps)
+    last = parsed[-1]
+    forecast_timestamps = [
+        _format_timestamp(last + step * (i + 1), date_only) for i in range(horizon)
+    ]
+    inferred = _freq_from_delta(step)
+    payload = {
+        "history_end": _format_timestamp(last, date_only),
+        "forecast_timestamps": forecast_timestamps,
+    }
+    if inferred is not None:
+        payload["freq"] = inferred
+    return payload
+
+
 def run_forecast(
     forecaster: Any,
     *,
@@ -95,6 +253,9 @@ def run_forecast(
     series_ids: list[str] | None = None,
     past_covariates: list[list[float]] | None = None,
     future_covariates: list[list[float]] | None = None,
+    start: str | None = None,
+    freq: str | None = None,
+    timestamps: list[str] | None = None,
 ) -> dict:
     try:
         if int(horizon) < 1:
@@ -125,6 +286,13 @@ def run_forecast(
                     context_length + int(horizon),
                 )
             ]
+        calendar = resolve_calendar(
+            context_length=context_length,
+            horizon=int(horizon),
+            start=start,
+            freq=freq,
+            timestamps=timestamps,
+        )
     except (TypeError, ValueError) as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -176,17 +344,19 @@ def run_forecast(
             ),
         }
 
+    stamp = None if calendar is None else calendar["forecast_timestamps"]
     items = []
     for i in range(n_series):
         q_i = None if quantiles is None else quantiles[i]
         sid = series_ids[i] if series_ids is not None else f"series_{i}"
-        items.append(
-            {
-                "id": sid,
-                "forecast": forecast[i].astype(float).tolist(),
-                "quantiles": serialize_quantiles(q_i),
-            }
-        )
+        item: dict[str, Any] = {
+            "id": sid,
+            "forecast": forecast[i].astype(float).tolist(),
+            "quantiles": serialize_quantiles(q_i),
+        }
+        if stamp is not None:
+            item["timestamps"] = stamp
+        items.append(item)
 
     payload: dict[str, Any] = {
         "status": "success",
@@ -199,6 +369,12 @@ def run_forecast(
         "quantile_levels": QUANTILE_LEVELS,
         "license": LICENSE_NOTE,
     }
+    if calendar is not None:
+        if calendar.get("freq") is not None:
+            payload["freq"] = calendar["freq"]
+        payload["history_end"] = calendar["history_end"]
+        if n_series == 1:
+            payload["timestamps"] = stamp
     if n_series == 1:
         payload["forecast"] = items[0]["forecast"]
         payload["quantiles"] = items[0]["quantiles"]
