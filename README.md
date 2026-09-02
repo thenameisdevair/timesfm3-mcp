@@ -2,7 +2,7 @@
 
 MCP server that exposes Google's **TimesFM-3** zero-shot time-series foundation model to AI agents (Claude Desktop, Claude Code, Cursor, and any MCP client).
 
-Pass one series or several related series, plus optional past / known-future covariates. Get a median forecast plus nine quantile bands (`q10`–`q90`) per series.
+Pass one series or several related series, plus optional past / known-future covariates. Get a median forecast plus nine quantile bands (`q10`–`q90`) per series. Optional `start` + `freq` (or a history timestamp list) labels each forecast step with a date.
 
 **Repo:** https://github.com/thenameisdevair/timesfm3-mcp
 
@@ -80,6 +80,29 @@ Shape rules (same as TimesFM-3):
 
 `forecast_demand(history, horizon)` remains a deprecated alias for a single series.
 
+Optional calendar (does not change the model output, only labels it):
+
+```json
+{
+  "history": [10, 11, 13, 12, 14, 16, 15, 17],
+  "horizon": 3,
+  "start": "2026-08-25",
+  "freq": "D"
+}
+```
+
+```json
+{
+  "status": "success",
+  "freq": "D",
+  "history_end": "2026-09-01",
+  "timestamps": ["2026-09-02", "2026-09-03", "2026-09-04"],
+  "forecast": [17.7, 18.6, 19.7]
+}
+```
+
+`freq` is `H`, `D`, `W`, or `M`. `start` is the first history timestamp. If you pass a `timestamps` list instead, it must be length `T` and strictly regular — gaps are an error, not filled. Omit all of these and the response stays array-only.
+
 ## Local setup
 
 Weights are gated on Hugging Face. Accept the model terms, then log in.
@@ -108,6 +131,7 @@ Smoke-test inference (loads the 330M checkpoint; first run downloads weights):
 ```bash
 cd local
 python client.py
+python client_calendar.py
 ```
 
 Start the stdio server the same way an MCP client will:
@@ -180,6 +204,7 @@ Implemented now:
 
 - Univariate and joint multivariate `forecast` with point + 9 quantiles
 - Past-only and past-future covariates
+- Optional `start`/`freq` or regular history timestamps on the response
 - Local stdio + cloud SSE
 - Explicit license banner on the tool and in this README
 
