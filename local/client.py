@@ -1,10 +1,18 @@
 import asyncio
+import json
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 SERVER = Path(__file__).with_name("server.py")
+
+
+async def _print_tool(session, name, arguments):
+    print(f"\n=== {name} {json.dumps(arguments)[:120]} ===")
+    result = await session.call_tool(name, arguments=arguments)
+    for item in result.content:
+        print(item.text)
 
 
 async def main():
@@ -19,18 +27,26 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            dummy_history = [10.5, 12.1, 14.8, 15.2, 18.0]
-            horizon_steps = 5
-            print(f"Calling forecast on {dummy_history} -> {horizon_steps} steps")
-
-            result = await session.call_tool(
+            history = [10.5, 12.1, 14.8, 15.2, 18.0]
+            await _print_tool(
+                session,
                 "forecast",
-                arguments={"history": dummy_history, "horizon": horizon_steps},
+                {"history": history, "horizon": 5},
             )
 
-            print("\n--- Model output ---")
-            for item in result.content:
-                print(item.text)
+            sku_a = [10, 11, 13, 12, 14, 16, 15, 17]
+            sku_b = [20, 21, 22, 24, 23, 26, 25, 28]
+            promo = [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]  # T=8, H=3
+            await _print_tool(
+                session,
+                "forecast",
+                {
+                    "series": [sku_a, sku_b],
+                    "series_ids": ["sku_a", "sku_b"],
+                    "future_covariates": [promo],
+                    "horizon": 3,
+                },
+            )
 
 
 if __name__ == "__main__":

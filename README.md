@@ -2,7 +2,7 @@
 
 MCP server that exposes Google's **TimesFM-3** zero-shot time-series foundation model to AI agents (Claude Desktop, Claude Code, Cursor, and any MCP client).
 
-Give an agent a history series. Get a median forecast plus nine quantile bands (`q10`–`q90`).
+Pass one series or several related series, plus optional past / known-future covariates. Get a median forecast plus nine quantile bands (`q10`–`q90`) per series.
 
 **Repo:** https://github.com/thenameisdevair/timesfm3-mcp
 
@@ -21,33 +21,64 @@ The `forecast` tool repeats this warning in every response.
 
 Tool: `forecast`
 
+Univariate (also accepted as `history` for older clients):
+
 ```json
 {
-  "history": [10.5, 12.1, 14.8, 15.2, 18.0],
+  "series": [[10.5, 12.1, 14.8, 15.2, 18.0]],
   "horizon": 5
 }
 ```
+
+Joint multivariate with a known-future promo flag (`future_covariates` length is `T + horizon`):
+
+```json
+{
+  "series": [
+    [10, 11, 13, 12, 14, 16, 15, 17],
+    [20, 21, 22, 24, 23, 26, 25, 28]
+  ],
+  "series_ids": ["sku_a", "sku_b"],
+  "future_covariates": [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]],
+  "horizon": 3
+}
+```
+
+Response (multivariate):
 
 ```json
 {
   "status": "success",
   "model": "google/timesfm-3.0-pytorch",
-  "context_length": 5,
-  "horizon": 5,
-  "forecast": [18.4, 19.1, 19.8, 20.2, 20.9],
-  "quantiles": {
-    "q10": [16.1, 16.4, 16.8, 17.0, 17.3],
-    "q50": [18.4, 19.1, 19.8, 20.2, 20.9],
-    "q90": [21.0, 22.1, 23.0, 23.8, 24.6]
-  },
+  "mode": "multivariate",
+  "n_series": 2,
+  "context_length": 8,
+  "horizon": 3,
+  "series": [
+    {
+      "id": "sku_a",
+      "forecast": [17.2, 17.8, 18.1],
+      "quantiles": {
+        "q10": [15.0, 15.4, 15.7],
+        "q50": [17.2, 17.8, 18.1],
+        "q90": [20.1, 21.0, 21.6]
+      }
+    }
+  ],
   "quantile_levels": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
   "license": "TimesFM-3 pretrained weights are non-commercial / non-production..."
 }
 ```
 
-`forecast` is the median (q50). `quantiles` are the nine official TimesFM-3 heads, 10th through 90th percentile. Numbers above are illustrative.
+Numbers above are illustrative. Univariate calls also include top-level `forecast` and `quantiles` so older clients keep working.
 
-`forecast_demand` still exists as a deprecated alias so older configs do not break.
+Shape rules (same as TimesFM-3):
+
+- All target rows have length `T`
+- `past_covariates` each have length `T`
+- `future_covariates` each have length `T + horizon`
+
+`forecast_demand(history, horizon)` remains a deprecated alias for a single series.
 
 ## Local setup
 
@@ -64,6 +95,12 @@ pip install -r local/requirements.txt
 pip install git+https://github.com/google-research/timesfm.git
 
 huggingface-cli login
+```
+
+Shape/validation tests (no weight download):
+
+```bash
+python -m unittest tests.test_forecasting -v
 ```
 
 Smoke-test inference (loads the 330M checkpoint; first run downloads weights):
@@ -126,14 +163,14 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
-Then ask: *Forecast the next 8 steps from this series and tell me the q10 / q50 / q90 range.*
+Then ask: *Jointly forecast sku_a and sku_b for 8 steps, with this promo flag as a future covariate, and give q10 / q50 / q90.*
 
 ## Cloud (Hugging Face Space)
 
 `cloud/` is a Docker image that serves the same tool over HTTP/SSE on port 7860.
 
 1. Create a **Docker** Space.
-2. Set the build context to the `cloud/` folder, or copy `cloud/Dockerfile`, `cloud/app.py`, and `cloud/requirements.txt` to the Space root.
+2. Set the build context to the `cloud/` folder (it includes `forecasting.py`), or copy `cloud/Dockerfile`, `cloud/app.py`, `cloud/forecasting.py`, and `cloud/requirements.txt` to the Space root.
 3. Add Space secret `HF_TOKEN` (a Hugging Face token that can download `google/timesfm-3.0-pytorch`).
 4. Keep the Space marked research / non-commercial. The weights license does not allow a paid hosted forecast API.
 
@@ -141,14 +178,11 @@ Then ask: *Forecast the next 8 steps from this series and tell me the q10 / q50 
 
 Implemented now:
 
-- Univariate `forecast` with point + 9 quantiles
+- Univariate and joint multivariate `forecast` with point + 9 quantiles
+- Past-only and past-future covariates
 - Local stdio + cloud SSE
 - Explicit license banner on the tool and in this README
 
-Not in this release (on purpose):
+Not in this release:
 
-- Native multivariate targets
-- Past-only / past-future covariates
 - Commercial inference backend (TimesFM 2.5 or BigQuery)
-
-Those are the next product steps. This cut is the shareable TimesFM-3 MCP surface.
