@@ -1,2 +1,5 @@
 fastmcp
+mcp
 torch
+numpy
+huggingface_hub

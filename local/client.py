@@ -1,38 +1,37 @@
 import asyncio
+from pathlib import Path
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+SERVER = Path(__file__).with_name("server.py")
+
+
 async def main():
-    # Point the client to your local server file
     server_params = StdioServerParameters(
         command="python",
-        args=["server.py"]
+        args=[str(SERVER)],
     )
 
-    print("Booting up the MCP Server...")
-    
-    # Open the connection
+    print("Booting the TimesFM-3 MCP server...")
+
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
-            # Initialize the handshake
             await session.initialize()
-            
-            # Prepare our dummy data
+
             dummy_history = [10.5, 12.1, 14.8, 15.2, 18.0]
             horizon_steps = 5
-            
-            print(f"Sending data to TimesFM: {dummy_history}")
-            
-            # Call the tool exactly as an AI agent would
+            print(f"Calling forecast on {dummy_history} -> {horizon_steps} steps")
+
             result = await session.call_tool(
-                "forecast_demand",
-                arguments={"history": dummy_history, "horizon": horizon_steps}
+                "forecast",
+                arguments={"history": dummy_history, "horizon": horizon_steps},
             )
-            
-            # Print the raw output from TimesFM
-            print("\n--- Model Output ---")
+
+            print("\n--- Model output ---")
             for item in result.content:
                 print(item.text)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
