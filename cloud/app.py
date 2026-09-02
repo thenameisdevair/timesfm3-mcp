@@ -1,19 +1,18 @@
 import os
 import sys
+from pathlib import Path
 
-import numpy as np
 import torch
 from fastmcp import FastMCP
 from huggingface_hub import login
 from timesfm3 import ModelConfig, TimesFM3Evaluator
 
-QUANTILE_LEVELS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-LICENSE_NOTE = (
-    "TimesFM-3 pretrained weights (google/timesfm-3.0-pytorch) are released "
-    "under Google's timesfm-non-commercial-license-v1.0. They may be used for "
-    "research, evaluation, and non-production experiments only — not for "
-    "commercial or production systems. This MCP server's own code is Apache-2.0."
-)
+ROOT = Path(__file__).resolve().parents[1]
+for path in (Path(__file__).resolve().parent, ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from forecasting import run_forecast  # noqa: E402
 
 hf_token = os.environ.get("HF_TOKEN")
 if hf_token:
@@ -32,77 +31,53 @@ forecaster = TimesFM3Evaluator(config)
 sys.stderr.write("Model ready.\n")
 
 
-def _serialize_quantiles(quantiles) -> dict | None:
-    if quantiles is None:
-        return None
-    q = np.asarray(quantiles)
-    if q.ndim == 1:
-        q = q.reshape(-1, 1)
-    packed = {}
-    n_q = int(q.shape[-1])
-    for i in range(n_q):
-        if i < len(QUANTILE_LEVELS):
-            key = f"q{int(QUANTILE_LEVELS[i] * 100)}"
-        else:
-            key = f"q_index_{i}"
-        packed[key] = q[:, i].astype(float).tolist()
-    return packed
-
-
-def _run_forecast(history: list[float], horizon: int) -> dict:
-    if not history:
-        return {"status": "error", "error": "history must be a non-empty list of numbers"}
-    if horizon < 1:
-        return {"status": "error", "error": "horizon must be >= 1"}
-
-    history_array = np.asarray(history, dtype=np.float32).reshape(-1)
-    sys.stderr.write(f"Inference: {history_array.size} points -> {horizon} steps\n")
-
-    outputs = list(
-        forecaster.predict_batch(
-            [history_array],
-            horizon=horizon,
-            return_quantiles=True,
-            use_symmetric_averaging=False,
-        )
-    )
-    first = outputs[0]
-    return {
-        "status": "success",
-        "model": "google/timesfm-3.0-pytorch",
-        "context_length": int(history_array.size),
-        "horizon": int(horizon),
-        "forecast": np.asarray(first.forecast).astype(float).tolist(),
-        "quantiles": _serialize_quantiles(first.quantiles),
-        "quantile_levels": QUANTILE_LEVELS,
-        "license": LICENSE_NOTE,
-    }
-
-
 @mcp.tool()
-def forecast(history: list[float], horizon: int = 5) -> dict:
+def forecast(
+    series: list[list[float]] | None = None,
+    history: list[float] | None = None,
+    horizon: int = 5,
+    series_ids: list[str] | None = None,
+    past_covariates: list[list[float]] | None = None,
+    future_covariates: list[list[float]] | None = None,
+) -> dict:
     """Zero-shot forecast with Google TimesFM-3.
 
-    Returns a median point forecast plus nine quantile bands (q10 through q90).
+    Pass one series (univariate) or several related series (joint multivariate).
+    Optional past_covariates must be length T. Optional future_covariates
+    (known ahead, e.g. promo flags) must be length T + horizon.
+
+    Returns a median point forecast plus nine quantile bands (q10 through q90)
+    per series.
 
     TimesFM-3 weights are licensed for non-commercial, non-production use only.
-    Do not call this tool as part of a paid product, customer deliverable, or
-    production planning system.
 
     Args:
-        history: Observed values in chronological order. Longer context is better.
-        horizon: Number of future steps to predict. Must be >= 1.
+        series: Target series, each a chronological list of the same length T.
+            One row is univariate. Two or more rows are forecast jointly.
+        history: Back-compat shortcut for a single series. Do not pass with series.
+        horizon: Number of future steps. Must be >= 1.
+        series_ids: Optional names, one per series row.
+        past_covariates: Channels known only in the past. Each length T.
+        future_covariates: Channels known in the past and future. Each length T+horizon.
     """
-    return _run_forecast(history, horizon)
+    return run_forecast(
+        forecaster,
+        series=series,
+        history=history,
+        horizon=horizon,
+        series_ids=series_ids,
+        past_covariates=past_covariates,
+        future_covariates=future_covariates,
+    )
 
 
 @mcp.tool()
 def forecast_demand(history: list[float], horizon: int = 5) -> dict:
-    """Deprecated alias of `forecast`. Prefer `forecast`.
+    """Deprecated alias of `forecast` for a single series. Prefer `forecast`.
 
-    Same contract and the same TimesFM-3 non-commercial license limit.
+    Same TimesFM-3 non-commercial license limit.
     """
-    return _run_forecast(history, horizon)
+    return run_forecast(forecaster, history=history, horizon=horizon)
 
 
 if __name__ == "__main__":
