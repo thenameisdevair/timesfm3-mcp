@@ -39,12 +39,18 @@ def forecast(
     series_ids: list[str] | None = None,
     past_covariates: list[list[float]] | None = None,
     future_covariates: list[list[float]] | None = None,
+    start: str | None = None,
+    freq: str | None = None,
+    timestamps: list[str] | None = None,
 ) -> dict:
     """Zero-shot forecast with Google TimesFM-3.
 
     Pass one series (univariate) or several related series (joint multivariate).
     Optional past_covariates must be length T. Optional future_covariates
     (known ahead, e.g. promo flags) must be length T + horizon.
+
+    Optional start + freq (or a history timestamp list) labels the forecast
+    with ISO dates. Irregular timestamp lists are rejected; gaps are not filled.
 
     Returns a median point forecast plus nine quantile bands (q10 through q90)
     per series.
@@ -59,6 +65,9 @@ def forecast(
         series_ids: Optional names, one per series row.
         past_covariates: Channels known only in the past. Each length T.
         future_covariates: Channels known in the past and future. Each length T+horizon.
+        start: ISO date/time of the first history point. Requires freq.
+        freq: Spacing of the series: H, D, W, or M.
+        timestamps: History timestamps, length T, strictly regular. Do not pass with start/freq.
     """
     return run_forecast(
         forecaster,
@@ -68,6 +77,9 @@ def forecast(
         series_ids=series_ids,
         past_covariates=past_covariates,
         future_covariates=future_covariates,
+        start=start,
+        freq=freq,
+        timestamps=timestamps,
     )
 
 
